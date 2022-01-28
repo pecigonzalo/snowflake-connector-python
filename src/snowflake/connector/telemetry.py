@@ -7,9 +7,13 @@
 import logging
 from enum import Enum, unique
 from threading import Lock
+from typing import TYPE_CHECKING, Optional
 
 from .secret_detector import SecretDetector
 from .test_util import ENABLE_TELEMETRY_LOG, rt_plain_logger
+
+if TYPE_CHECKING:
+    from .network import SnowflakeRestful
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,7 @@ class TelemetryField(Enum):
     TIME_PARSING_CHUNKS = "client_time_parsing_chunks"
     SQL_EXCEPTION = "client_sql_exception"
     GET_PARTITIONS_USED = "client_get_partitions_used"
+    EMPTY_SEQ_INTERPOLATION = "client_pyformat_empty_seq_interpolation"
     # fetch_pandas_* usage
     PANDAS_FETCH_ALL = "client_fetch_pandas_all"
     PANDAS_FETCH_BATCHES = "client_fetch_pandas_batches"
@@ -65,16 +70,15 @@ class TelemetryClient(object):
     SF_PATH_TELEMETRY = "/telemetry/send"
     DEFAULT_FORCE_FLUSH_SIZE = 100
 
-    def __init__(self, rest, flush_size=None):
-        self._rest = rest
+    def __init__(self, rest: "SnowflakeRestful", flush_size=None):
+        self._rest: Optional["SnowflakeRestful"] = rest
         self._log_batch = []
-        self._is_closed = False
         self._flush_size = flush_size or TelemetryClient.DEFAULT_FORCE_FLUSH_SIZE
         self._lock = Lock()
         self._enabled = True
 
     def add_log_to_batch(self, telemetry_data: "TelemetryData") -> None:
-        if self._is_closed:
+        if self.is_closed:
             raise Exception("Attempted to add log when TelemetryClient is closed")
         elif not self._enabled:
             logger.debug("TelemetryClient disabled. Ignoring log.")
@@ -93,7 +97,7 @@ class TelemetryClient(object):
             logger.warning("Failed to add log to telemetry.", exc_info=True)
 
     def send_batch(self):
-        if self._is_closed:
+        if self.is_closed:
             raise Exception("Attempted to send batch when TelemetryClient is closed")
         elif not self._enabled:
             logger.debug("TelemetryClient disabled. Not sending logs.")
@@ -137,15 +141,16 @@ class TelemetryClient(object):
             self._enabled = False
             logger.debug("Failed to upload metrics to telemetry.", exc_info=True)
 
+    @property
     def is_closed(self):
-        return self._is_closed
+        return self._rest is None
 
     def close(self, send_on_close=True):
-        if not self._is_closed:
+        if not self.is_closed:
             logger.debug("Closing telemetry client.")
             if send_on_close:
                 self.send_batch()
-            self._is_closed = True
+            self._rest = None
 
     def disable(self):
         self._enabled = False
